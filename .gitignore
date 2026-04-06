@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Quartus
+db/
+incremental_db/
+*.qws
+*.bak
+*.orig
+*.rpt
+*.smsg
+*.summary
+*.jdi
+*.jditmp
+*.done
+*.qpf
+*.qsf
+*.qdf
+*.vcd
+*.vvp
+*.log
+
+# Office Temp Files
+~$*
+
+# Simulation Outputs
+simulation_output/
+membrane.csv
+spikes.csv
+weights.csv
+
+# Others
+.DS_Store
+Thumbs.db
+
+# Large Video Files
+video/Final Export/snn_demo_v1.mp4
+video/IMG_8449.mov
+video/*.mp4
+video/*.mov

@@ -1,0 +1,110 @@
+Scope
+This document explains the full light_snn package: sensor ingestion, spiking network dynamics, training, prototype-based decision logic, visualization, and robot command output. It references exact code locations using file_path:line_number.
+
+Architecture Overview
+- Sensor source: Arduino Mega reads a 3×3 LDR grid and 5 buttons, emits binary frames (header + payload) at ~20 ms intervals (light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino:1–61).
+- Ingestion: Python SerialReader deserializes frames and exposes sensor values and button states (light_snn/io_serial.py:1–32).
+- Core SNN: SNNController implements a 3‑layer spiking pipeline with memristor synapses and LIF neurons; training, prototypes, and decision selection live here (light_snn/snn.py:1–226).
+- UI: ValuesUI draws the 3×3 sensor grid, hidden/output activity pulses, and current direction (light_snn/ui_values.py:1–152).
+- Robot output: Esp32Client sends UDP commands to an ESP32 (light_snn/io_wifi.py:1–15).
+- Orchestration: main.py wires CLI → SNNController, serial/UDP IO, UI loop, training/inference gating (light_snn/main.py:1–152).
+
+Arduino Frame Format
+- Pins: Sensors use analog pins `{A15,A3,A0,A14,A4,A1,A13,A5,A2}` in row-major grid order; buttons on D9–D13 with INPUT_PULLUP (light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino:1–23).
+- Sampling: 10‑bit ADC is shifted left to 12‑bit (`v10 << 2`) for sensors12[i] (mega_sensor_grid.ino:30–33).
+- Frame: Header `0xAA 0x55`, then 9 sensor words (big‑endian hi/lo bytes), then 1 byte mask (mega_sensor_grid.ino:42–58).
+- Mask bits: `train=0x01, left=0x02, right=0x04, front=0x08, back=0x10` (mega_sensor_grid.ino:14–21).
+
+Serial Ingestion
+- Opening: `serial.Serial(port, baudrate, timeout)` with default timeout 0.02 s to reduce UI lag (light_snn/io_serial.py:3–9).
+- Read flow: validate header (2 bytes), read payload `n_inputs*2 + 1` bytes, parse sensors to 12‑bit values and mask to booleans (light_snn/io_serial.py:10–32).
+
+SNNController: State and Parameters
+- Dimensions: `n_inputs=9, n_hidden=12, n_outputs=4` (light_snn/snn.py:6–17).
+- LIF neuron params: `dt_ms`, `dt`, `tau`, `v_threshold`, `v_reset` (snn.py:10–15).
+- Memristor arrays: `mem_in_hidden[n_inputs*n_hidden]`, `mem_hidden_out[n_hidden*n_outputs]` (snn.py:18–19).
+- Spike generation controls: `max_rate_hz, rate_gain` (snn.py:20–21).
+- Training strengths: `train_delta_steps, train_boost, depress_steps` (snn.py:22–24).
+- Prototypes: `protos[n_outputs][n_inputs]`, EMA rate `proto_beta`, bias gain/min `proto_gain, proto_min_sim` (snn.py:25–28).
+- Decision aids: selection state `choice_idx/choice_hold`, hysteresis knobs `hold_frames, hold_sim_min, switch_margin`, similarity override thresholds `sim_decide_min, sim_decide_margin` (snn.py:29–35).
+- Synaptic multipliers: `syn_gain_in`, `syn_gain_out` to scale injected current magnitudes (snn.py:36).
+- Sensor preprocessing: baselines, deviations, thresholds, smoothing, activation windows (snn.py:37–55).
+
+Weight Initialization
+- Grid generator `_grid_weights(theta, origin, target)` builds a 3×3 map using `theta + exp(((i+1)*(j+1))/denom)`, where `denom = sqrt((tx-ox)^2+(ty-oy)^2) or 1.0` (snn.py:47–60).
+- IN→HIDDEN: For each hidden cell, targets are the 9 base positions; the 3×3 grid is scaled into `[g_min,g_max]` and written to memristors (snn.py:61–76).
+- HIDDEN→OUT: Targets correspond to directional centers `[(0,1),(2,1),(1,2),(1,0)]`; per output j, a grid is scaled and assigned to hidden rows (snn.py:77–95).
+- Hidden indices beyond 8 for HIDDEN→OUT remain at memristor default midpoint because of `min(self.n_hidden,self.n_inputs)` (snn.py:85–95).
+
+Sensor → Spike Encoding
+- Smoothing: EMA `sensor_smooth[i] = α*s + (1−α)*x`, `smooth_alpha` (snn.py:93–100).
+- Calibration: When `calibrate=True`, baseline and deviation EMAs update; no spikes emitted; active mask cleared; drop set zero; `cal_frames++` (snn.py:96–105, 122–124).
+- Drop metric: `x_drop = baseline − smooth − (noise_margin + k_sigma*dev)`; normalized by `denom=max(1.0,baseline)` into `last_drop[i]` (snn.py:104–107, 111–114).
+- Activation gating: Conditions `rel_ok`, `abs_ok`, min activity frames, and extra flash margin ensure only genuine sensor dips cause spiking (snn.py:108–116).
+- Spike probability: `r = max_rate_hz*rate_gain*clip(x_drop/denom); p = clip(r*dt); spikes[i] = rand() < p` (snn.py:116–121).
+
+Synaptic Current and LIF
+- IN→HIDDEN current: Sum conductance for all active inputs scaled by spike voltage and syn gain; `currents[h] += g * v_spike * syn_gain_in` (snn.py:132–139).
+- Hidden LIF: `v_hidden[h] += (I − v)/τ * dt`; threshold crossing triggers spike and reset (snn.py:140–148).
+- HIDDEN→OUT current: Sum conductance for spiking hidden scaled by spike voltage and syn gain; `currents[j] += g * v_spike * syn_gain_out` (snn.py:149–156).
+- Output LIF: identical update and reset on threshold (snn.py:157–165).
+
+Training
+- Direction index mapping `{left:0,right:1,front:2,back:3}` via `_dir_index` (snn.py:166–168).
+- Hidden→Out potentiation: For spiking hidden, potentiates synapses to the target output by `train_delta_steps*train_boost`, depresses non‑target outputs by `depress_steps` (snn.py:173–178).
+- In→Hidden potentiation: For active inputs and spiking hidden, potentiates corresponding synapses by `train_delta_steps*train_boost` (snn.py:179–183).
+- Prototype update: EMA of the current normalized drop vector into the target direction prototype: `proto[idx][i] ← β*old + (1−β)*last_drop[i]` (snn.py:185–188).
+- Output clamping during training: Forces target output spike for UI feedback (snn.py:197–201).
+
+Prototype Bias and Decision Selection
+- Similarity computation: For each output j, compute cosine‑like similarity `sim = (proto·drops) / (||proto||·||drops||)` (snn.py:202–208).
+- Bias: If `sim ≥ proto_min_sim`, adds membrane bias `v_out[j] += proto_gain * sim` to help spiking converge (snn.py:209–213).
+- Decision rule (inference): Picks `best_idx = argmax(sim)` and forces a one‑hot output spike vector at that index; stores selection state (snn.py:214–224).
+- Decision rule (training/calibration): Uses actual output spikes if present, otherwise fallback to highest `v_out` (snn.py:224–226).
+
+Calibration Gating
+- The orchestrator computes `calibrate = (cal_frames < calibrate_target_frames) and not training and not demo` and passes it to `step(...)` (light_snn/main.py:85, 123).
+- During calibration, baselines and deviations converge while no spikes/decisions occur (snn.py:96–105, 122–124).
+
+UI and Direction Output
+- UI shows sensor values, input active mask, hidden spikes, output spikes, membranes, and textual direction label (light_snn/ui_values.py:38–152).
+- Direction mapping to text: `dirs = ["LEFT","RIGHT","FRONT","BACK"]` and returned from `step(...)` (snn.py:237–226 [note: returns at 226]).
+- ESP32 UDP client: Sends `{cmd:"MOVE", dir, power}` for inference frames unless `--dry_run` is set (light_snn/io_wifi.py:1–15, light_snn/main.py:90–95, 132–134).
+
+CLI Parameters (main.py)
+- Sensor/encoding: `--dt_ms, --calibrate_frames, --noise_margin, --sigma_multiplier, --smooth_alpha, --active_frames, --flash_extra, --ratio_min, --delta_min, --max_rate_hz, --rate_gain, --v_threshold, --v_spike` (light_snn/main.py:14–35).
+- Training: `--train_steps, --train_boost, --depress_steps` (main.py:33, 35–36, 57–58).
+- Prototypes/bias: `--proto_gain, --proto_min_sim, --proto_beta` (main.py:37–39, 59–61).
+- Hysteresis/selection: `--hold_frames, --hold_sim_min, --switch_margin, --sim_decide_min, --sim_decide_margin` (main.py:39–61).
+- Synaptic gains: `--syn_gain_in, --syn_gain_out` (main.py:39–61).
+- Visualization and routing: `--ui_values, --ui, --fullscreen, --demo, --serial, --baud, --esp32_host, --esp32_port, --dry_run, --n_hidden, --init_theta` (main.py:8–22, 40–44).
+
+Execution Flow (main.py)
+- Setup: Parse CLI, open serial (unless `--demo`), create UDP client, instantiate SNNController, set params, initialize weights (light_snn/main.py:47–66).
+- UI loop path: read frame if available; compute `training` from inverted train button; derive `train_dir` from inverted direction buttons; compute `calibrate`; run `snn.step(...)`; update UI; send direction if inference; sleep for `dt_ms` (main.py:69–97).
+- Non‑UI path: either demo sensor generation or serial read; same `training/train_dir/calibrate` gating and direction output (main.py:98–139).
+
+Memristor Model
+- Discrete states `[0..n_states-1]` mapped linearly to conductance in `[g_min,g_max]` (light_snn/memristor.py:1–12).
+- Potentiate and depress move the state by `steps` bound to valid range (memristor.py:13–17).
+- `set_conductance(g)` back‑computes the closest state for a requested conductance (memristor.py:15–18).
+
+Design Rationale
+- Real sensor noise and sparse hidden spiking can make pure voltage‑based competition flicker or underfire. Prototype similarity readout stabilizes choices and tracks trained patterns robustly.
+- Hysteresis and bias support LIF convergence without abandoning spiking dynamics; decisions stay consistent across frames.
+- Synaptic gain scalers correct the magnitude mismatch between memristor conductances and desired current levels for practical thresholds.
+- Calibration gating ensures baselines/dev estimates settle before inference to avoid false positive spikes.
+
+Known Behaviors
+- Buttons are active‑low; “released” means True in the UI booleans drawn; training is enabled when train is released (`not bool(buttons.get("train"))`) (light_snn/main.py:75–76).
+- HIDDEN→OUT initialization sets only the first 9 hidden rows based on input positions; rows 9–11 start at midpoint conductance (snn.py:85–95).
+- In training path, the target output spike is forced for immediate closed‑loop feedback to the user (snn.py:197–201).
+
+File References
+- SNNController: `light_snn/snn.py`
+- Orchestrator: `light_snn/main.py`
+- Serial IO: `light_snn/io_serial.py`
+- ESP32 UDP: `light_snn/io_wifi.py`
+- UI: `light_snn/ui_values.py`
+- Arduino sketch: `light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino`
+- Memristor model: `light_snn/memristor.py`

@@ -1,0 +1,63 @@
+1) Assemble hardware
+- Mount motors, caster, L298N, DE10-Lite, Arduino Mega, battery, and the 3×3 LDR grid on the chassis.
+- Tie Arduino GND, FPGA GND, and L298N GND together. Keep motor power isolated from logic power (separate supplies, shared ground).
+
+2) Wire sensors to Arduino (2×2)
+- Build four LDR voltage dividers (LDR + ~10kΩ). Connect midpoints to A0..A3.
+- Verify readings in Arduino Serial Monitor.
+
+3) Flash Arduino
+- Open Arduino IDE, load arduino/uno_sensor_motor/uno_sensor_motor.ino.
+- Upload to the Arduino Uno.
+- Wire Arduino TX (D1) through a 5V→3.3V level shifter to the FPGA uart_rx pin; connect grounds.
+- Wire FPGA uart_tx (3.3V) to Arduino RX (D0).
+
+4) Generate weights ROM
+- In the project folder:
+  python scripts/weights_init.py --size 2
+- Confirm weights_rom.hex is generated (8 lines).
+
+5) Create Quartus project (DE10-Lite)
+- New project targeting your DE10-Lite device (MAX 10 variant on your board).
+- Add RTL files: rtl/*.v and include weights_rom.hex.
+- Set top-level to rtl/snn_top_de10lite_2x2.v.
+
+6) Assign pins
+- uart_rx: connect to the level-shifted Arduino TX pin.
+- uart_tx: connect to the Arduino RX pin (3.3V acceptable).
+- KEY0, KEY1: connect to the DE10-Lite push-buttons (active-low).
+- SW0: connect to the DE10-Lite slide switch (active-high).
+- Set I/O standard to 3.3V LVTTL.
+
+7) Compile and program FPGA
+- Compile in Quartus.
+- Program DE10-Lite via USB-Blaster.
+
+8) Bench test (motors disconnected)
+- Power Arduino and FPGA.
+- Shine light at different positions; verify pwm_left/pwm_right change.
+- Press TRAIN + LEFT/RIGHT to see supervised updates (observe changes in PWM).
+
+9) Connect motors and battery
+- Wire L298N: ENA ← Arduino D5, ENB ← Arduino D6; IN1..IN4 ← Arduino D7..D10.
+- Supply motor battery to L298N Vmot; share ground with Arduino.
+- Test motion: robot should steer toward bright regions.
+
+10) Field training
+- For straight-ahead light: hold TRAIN and press both LEFT and RIGHT.
+- For turns: hold TRAIN and press the side corresponding to the light.
+- Repeat to reinforce until behavior is consistent; conductances saturate at g_max.
+
+11) Optional debug
+- Add SignalTap to observe v_left_dbg, v_right_dbg, spikes_in, update_mask, and g_mem activity.
+
+12) Optional extensions
+- Add mutual inhibition between neurons for stronger winner-take-all.
+- Integrate real memristors: connect SPI DAC/ADC and implement a write-verify FSM in crossbar_interface.
+Alt path: FPGA-only (no Arduino)
+- Build four LDR voltage dividers (to 3.3V/GND) and wire midpoints to DE10-Lite analog input header (ADC channels).
+- In Quartus Platform Designer, add Modular ADC (MAX 10), configure 4 channels (12-bit), generate HDL.
+- Integrate ADC IP outputs into `rtl/snn_top_adc_2x2.v` ports (`adc_ch0..adc_ch3`).
+- Set top-level to `rtl/snn_top_adc_2x2.v`.
+- Assign pins for `KEY0`, `KEY1`, `SW0`, `pwm_left`, `pwm_right`.
+- Compile and program; test spikes, training, and motor PWM directly from FPGA.

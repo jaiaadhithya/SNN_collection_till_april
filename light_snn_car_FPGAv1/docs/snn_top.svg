@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <rect x="0" y="0" width="1920" height="1080" fill="#0f1115"/>
+  <style>
+    .title { fill:#e0e0e0; font-family:Segoe UI, Roboto, Arial; font-size:36px; font-weight:700 }
+    .label { fill:#cfd8dc; font-family:Segoe UI, Roboto, Arial; font-size:22px; font-weight:600 }
+    .small { fill:#b0bec5; font-family:Segoe UI, Roboto, Arial; font-size:18px }
+    .box { fill:#1c2228; stroke:#546e7a; stroke-width:2 }
+    .port { fill:#263238; stroke:#78909c; stroke-width:2 }
+    .wire { stroke:#4FC3F7; stroke-width:4; fill:none; marker-end:url(#arrow) }
+    .wire2 { stroke:#00D1FF; stroke-width:4; fill:none; marker-end:url(#arrow) }
+    .wire3 { stroke:#00C853; stroke-width:4; fill:none; marker-end:url(#arrow) }
+    .node { fill:#212b33; stroke:#607d8b; stroke-width:2 }
+    .dot { fill:#9370DB }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <polygon points="0,0 12,4 0,8" fill="#4FC3F7"/>
+    </marker>
+  </defs>
+
+  <text x="60" y="70" class="title">Light SNN Car (FPGA) — Top-Level RTL Dataflow</text>
+
+  <!-- Left: Arduino Mega UART RX -->
+  <rect x="60" y="160" width="280" height="120" class="port"/>
+  <text x="80" y="200" class="label">Arduino Mega</text>
+  <text x="80" y="230" class="small">UART RX (AA55 + 9×16b + mask)</text>
+
+  <!-- UART RX Module -->
+  <rect x="400" y="150" width="320" height="140" class="box"/>
+  <text x="420" y="190" class="label">uart_rx (BAUD=9600)</text>
+  <text x="420" y="220" class="small">Deserializes bytes</text>
+  <text x="420" y="246" class="small">Out: data[7:0], valid</text>
+
+  <!-- Frame RX Module -->
+  <rect x="800" y="140" width="380" height="160" class="box"/>
+  <text x="820" y="180" class="label">frame_rx</text>
+  <text x="820" y="210" class="small">Parses header + payload</text>
+  <text x="820" y="236" class="small">Out: sensors[9×12b], btn_mask[7:0]</text>
+  <text x="820" y="262" class="small">frame_valid</text>
+
+  <!-- Wires: Arduino -> UART RX -->
+  <path d="M340,220 C360,220 380,220 400,220" class="wire"/>
+  <text x="340" y="208" class="small" fill="#4FC3F7">rx</text>
+
+  <!-- Wires: UART RX -> Frame RX -->
+  <path d="M720,220 C740,220 760,220 800,220" class="wire"/>
+  <text x="720" y="208" class="small" fill="#4FC3F7">data, valid</text>
+
+  <!-- SNN Core Module -->
+  <rect x="1240" y="120" width="560" height="380" class="box"/>
+  <text x="1260" y="160" class="label">snn_core</text>
+  <text x="1260" y="190" class="small">Inputs: sensors[9×12b], btn_mask, frame_valid</text>
+  <text x="1260" y="216" class="small">Hidden: thresholded activations (9)</text>
+  <text x="1260" y="242" class="small">Weights: w_h_out[9×4] with train/depress</text>
+  <text x="1260" y="268" class="small">Decision: argmax(out_sum[4]) ≥ thr</text>
+  <text x="1260" y="294" class="small">Output: dir_bits[3:0]</text>
+
+  <!-- Hidden nodes illustration -->
+  <g transform="translate(1280,330)">
+    <rect x="0" y="0" width="220" height="140" class="node"/>
+    <text x="10" y="24" class="small">Hidden activations</text>
+    <circle cx="30" cy="60" r="6" class="dot"/><circle cx="60" cy="60" r="6" class="dot"/><circle cx="90" cy="60" r="6" class="dot"/>
+    <circle cx="120" cy="60" r="6" class="dot"/><circle cx="150" cy="60" r="6" class="dot"/><circle cx="180" cy="60" r="6" class="dot"/>
+    <circle cx="45" cy="95" r="6" class="dot"/><circle cx="105" cy="95" r="6" class="dot"/><circle cx="165" cy="95" r="6" class="dot"/>
+  </g>
+
+  <!-- Outputs illustration -->
+  <g transform="translate(1530,330)">
+    <rect x="0" y="0" width="240" height="140" class="node"/>
+    <text x="10" y="24" class="small">Outputs</text>
+    <rect x="20" y="50" width="200" height="20" fill="#263238" stroke="#78909c" stroke-width="2"/>
+    <rect x="20" y="80" width="200" height="20" fill="#263238" stroke="#78909c" stroke-width="2"/>
+    <rect x="20" y="110" width="200" height="20" fill="#263238" stroke="#78909c" stroke-width="2"/>
+    <text x="24" y="65" class="small" fill="#00C853">FRONT / BACK</text>
+    <text x="24" y="95" class="small" fill="#00C853">LEFT / RIGHT</text>
+  </g>
+
+  <!-- Wires: Frame RX -> SNN Core -->
+  <path d="M1180,220 C1200,220 1220,220 1240,220" class="wire2"/>
+  <text x="1180" y="208" class="small" fill="#00D1FF">sensors[9], frame_valid</text>
+  <path d="M1180,260 C1200,260 1220,260 1240,260" class="wire2"/>
+  <text x="1180" y="248" class="small" fill="#00D1FF">btn_mask</text>
+
+  <!-- Outputs to direction bits -->
+  <rect x="1320" y="540" width="440" height="100" class="port"/>
+  <text x="1340" y="575" class="label">dir_bits[3:0]</text>
+  <text x="1340" y="605" class="small">[0]=FRONT, [1]=BACK, [2]=LEFT, [3]=RIGHT</text>
+  <path d="M1520,500 C1520,520 1520,530 1520,540" class="wire3"/>
+
+  <!-- Bottom legend -->
+  <text x="60" y="1020" class="small" fill="#90caf9">Legend: Blue=bytes/frames, Cyan=sensor/mask signals, Green=decision outputs</text>
+</svg>

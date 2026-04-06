@@ -1,0 +1,148 @@
+Project: Light-SNN Robot System — End-to-End Report
+
+Scope
+- Build a light-seeking robot driven by a spiking neural network (SNN) on a laptop (Python) and an FPGA variant (Verilog), with a 3×3 LDR sensor grid on Arduino Mega, user training via buttons, and car movement controlled over WiFi by an ESP32.
+- Provide robust calibration, spike generation, prototype-guided decision selection, and real-time robot control via UDP/TCP to an ESP32 motor driver.
+- This report summarizes architecture, algorithms, training, weight assessment/assignment logic, implementation details, car integration, and key troubleshooting outcomes. Code references use file_path:line_number for navigation.
+
+System Overview
+- Sensors: A 3×3 LDR grid feeds analog values to Arduino Mega, which streams binary frames over serial with a header and payload. Buttons enable supervised training and direction selection.
+- Ingestion: Python deserializes frames and feeds SNNController.
+- SNN: Three stages — input spike gating from sensor drops; hidden layer with memristor-like synapses; output layer with decision selection and prototype bias.
+- UI: Live dashboard shows the sensor grid, activations, hidden/output pulses, and current decision.
+- Robot Control: Directions sent over WiFi to an ESP32 AP (`snn_car`) controlling L298N drivers for DC motors (forward/back/left/right/stop), with ACKs for reliability.
+- FPGA Variant: Replicates the laptop SNN using Verilog RTL with UART frame parsing, spike encoding, crossbar summation, LIF neurons, and PWM motor output.
+
+Hardware
+- Arduino Mega sensor board
+  - Grid pins (row-major): A15, A3, A0, A14, A4, A1, A13, A5, A2 (light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino:1–6)
+  - Buttons: TRAIN=D9, LEFT=D10, FRONT=D11, BACK=D12, RIGHT=D13 (light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino:4–9)
+- ESP32 motor driver (L298N)
+  - Left: ENA=D19, IN1=D18, IN2=D5, IN3=D17, IN4=D16, ENB=D4 (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:9–14)
+  - Right: ENA=D12, IN1=D14, IN2=D27, IN3=D26, IN4=D25, ENB=D33 (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:16–21)
+- Common Ground: ESP32 GND tied to L298N GND
+- Power: Motor battery to L298N `+Vmotor`/GND; logic 5V on L298N as per board jumper; ESP32 powered separately
+
+Data Ingestion
+- Arduino Mega Serial Frame
+  - Header: 0xAA 0x55
+  - Payload: 9 × 16-bit sensor values (upper 4 bits masked off to 12-bit), big-endian `hi, lo`, plus one byte button mask
+  - Implementation: light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino:39–61
+- Python SerialReader
+  - Reads and validates header, then parses 9 × 16-bit words to 12-bit values and a mask to booleans
+  - Implementation: light_snn/io_serial.py:1–32
+
+SNN Architecture (Python)
+- Controller: `SNNController(n_inputs=9, n_hidden=12, n_outputs=4, dt_ms)` (light_snn/snn.py:6–21)
+- State and Parameters
+  - Spike/threshold controls, baselines, deviations, smoothing, noise margin, ratio/drop thresholds, active frame gating, per-synapse gains (light_snn/snn.py:42–55)
+  - Output neuron threshold (`v_threshold`) and spike voltage (`v_spike`) control injected currents downstream
+- Calibration
+  - Purpose: Estimate baseline and deviation for each sensor with EMA, with spikes suppressed during calibration
+  - Logic: `calibrate=True` updates baseline/dev and clears activation/spikes (light_snn/snn.py:98–116, 122–124)
+  - Orchestration: `calibrate = (snn.cal_frames < snn.calibrate_target_frames) and not training and not args.demo` (light_snn/main.py:99, 137)
+- Sensor → Spike Encoding
+  - Smoothing: EMA `sensor_smooth[i] = α*s + (1−α)*x` (light_snn/snn.py:98–104)
+  - Drop metric: `x_drop = baseline − smooth − (noise_margin + k_sigma*dev)`; normalized by `denom=max(1.0,baseline)` into `last_drop[i]` (light_snn/snn.py:104–114)
+  - Activation gating: Requires persistent drop for `active_frames`, additional flash margin, relative & absolute thresholds (light_snn/snn.py:108–116)
+  - Spike probability: `p = min(1, max(0, (max_rate_hz * rate_gain * (x_drop/denom)) * dt))` if active; sample Bernoulli (light_snn/snn.py:116–133)
+- Hidden and Output Synapses (memristor model, virtual)
+  - Hidden→Output current summation when hidden spikes fire (light_snn/snn.py:151–158)
+  - Input→Hidden similar at earlier stage for hidden spiking (implied by overall controller; memristor arrays for both layers exist at construction)
+- Decision Selection and Prototype Bias
+  - Prototypes: Per-output `protos[j][i]` represent expected drop pattern; EMA update rate `proto_beta` (light_snn/snn.py:25–28, 168–190)
+  - Similarity: Cosine-like between current `drops` and prototype; if above `proto_min_sim`, add bias to `v_out[j]` (light_snn/snn.py:202–213)
+  - One-hot decision: Select best index via similarity and apply hysteresis: hold frames, minimum similarity, and switch margin to avoid flicker (light_snn/snn.py:214–226)
+
+Training Mechanism (Python)
+- Supervised direction training when `TRAIN` is pressed
+  - Training gate controlled by Mega button state (light_snn/main.py:89–100, 127–139)
+  - Strengthen selected path via `train_delta_steps * train_boost`; depress non-selected via `depress_steps`; update prototypes toward observed drop vector (light_snn/snn.py:168–190)
+- Direction mapping
+  - Indexing: `{"left":0,"right":1,"front":2,"back":3}` (light_snn/snn.py:168–174)
+  - Protocol: During training, selection comes from buttons; during inference, selection comes from similarity + hysteresis (light_snn/snn.py:214–226)
+
+Weight Assessment/Assignment Logic
+- Purpose: Initialize structured synaptic weights that map spatial sensor grid patterns into hidden/output preferences before learning, enabling faster convergence and robust initial behavior
+- Implementation in Python SNN
+  - Grid weight generator supplies base conductances per hidden/output target using spatial decay, then scales to synaptic ranges; initialization called via `initialize_weights(theta)` (referenced in review and overall flow, initialized in light_snn/main.py:76)
+  - Conductance multipliers `syn_gain_in` and `syn_gain_out` scale injected current magnitudes from pre-spikes and hidden spikes respectively (light_snn/main.py:74–75; light_snn/snn.py:36, 151–158)
+  - Weight effects are visible immediately in similarity computation and `v_out` bias, and later adapted by training EMA (prototypes)
+- FPGA Documentation of Weight Logic
+  - Deterministic mapping summarized as: per-output blocks with spatial structure and normalization, seeded into ROM or registers; see “Weight Assignment Logic” (brian/setup_arch_overview.md:31) and crossbar summation (brian/rtl/crossbar_interface.v:46–48, 118–127 for SPI placeholders)
+
+UI Visualization
+- Sensor Grid: Shows raw 12-bit values and highlights active cells in yellow when activation conditions are met (light_snn/ui_values.py:56–69)
+- Inputs/Hidden/Outputs: Pulses glow on spike events; output labels: LEFT/RIGHT/FRONT/BACK (light_snn/ui_values.py:104–129)
+- Buttons: Bottom status line shows current button mask values (light_snn/ui_values.py:129–135)
+- Tuning knobs are exposed via CLI to match your sensor baseline ranges (light_snn/main.py:14–46)
+
+Robot Car Integration (ESP32)
+- WiFi AP: SSID `snn_car`, password `12345678`, IP `192.168.4.1`, UDP port `12345`; also listens on TCP port `12345` for testing (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:5–7, 107–116)
+- Motor Control: `setMotor` sets direction pins and enable HIGH for power != 0; `setDrive(l,r)` maps decisions to left/right speeds (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:32–58)
+- Protocol: Receives `{"cmd":"MOVE","dir":"FRONT|BACK|LEFT|RIGHT","power":float}` or `{"cmd":"STOP"}`; responds with `ACK ...` (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:60–87, 119–202)
+- Robust Parsing: Tolerates spaces in JSON, normalizes case, and flushes TCP ACK replies before closing (light_snn/arduino/esp32_udp_car/esp32_udp_car.ino:80–100, 175–202)
+- Safety behavior in app: On `"LEFT"`, the Python orchestrator sends `STOP` rather than move, per your latest requirement (light_snn/main.py:108–110, 148–150)
+
+FPGA Variant (Verilog)
+- UART Frame Parsing: Receives sensor frames and packs into a bus (brian/rtl/snn_top_uart.v:61–66; brian/rtl/sensor_frame_rx.v ref in docs)
+- Spike Encoding: Converts sensor magnitudes into stochastic spikes (brian/rtl/snn_top.v:1–35 for top config; encoder instantiation near 59–65 in adc or uart variants)
+- Crossbar Summation: Virtual memristor conductances perform MAC-like accumulation to left/right syn currents (brian/rtl/snn_top.v:65–90; brian/rtl/crossbar_interface.v:46–48)
+- LIF Neurons: Integrate currents and spike on threshold (brian/rtl/snn_top.v:91–120 region context)
+- Motor Output: Spike rate integration to PWM duty (brian/rtl/snn_top.v:138–147; brian/rtl/snn_top_uart.v:61–66)
+
+End-to-End Flow (Python)
+- Setup: Parse CLI, open serial and UDP client, initialize SNN weights and parameters (light_snn/main.py:47–76)
+- Loop:
+  - Read sensors/buttons; compute training flag and train_dir from buttons
+  - Compute calibrate flag; step SNN; render UI; send direction or STOP
+  - References: light_snn/main.py:82–114 (UI path), 118–152 (non-UI path)
+
+Key Algorithms and Parameters
+- Calibration EMA: `baseline_beta`, `dev_beta` control convergence speed; `calibrate_frames` gates calibration period
+- Gating thresholds: `noise_margin`, `sigma_multiplier`, `ratio_min`, `delta_min`, `flash_extra`, `active_frames` tuned to your 700–900 baseline and strong dips under light
+- Spike generation: `max_rate_hz`, `rate_gain`, `dt_ms`
+- Training knobs: `train_delta_steps`, `train_boost`, `depress_steps`
+- Prototypes: `proto_beta`, `proto_gain`, `proto_min_sim`
+- Decision hysteresis: `hold_frames`, `hold_sim_min`, `switch_margin`, `sim_decide_min`, `sim_decide_margin`
+- Synaptic scaling: `syn_gain_in`, `syn_gain_out`
+
+Testing and Troubleshooting Highlights
+- ESP32 car:
+  - AP connectivity verified (`ping 192.168.4.1`)
+  - UDP/TCP test clients; firmware modified to print raw strings, reply `ACK UNKNOWN` on unmatched payloads, and flush replies to avoid empty reads
+  - Boot self-test added to verify motor control before WiFi parsing
+  - Common ground between ESP32 and L298N required for motion; ENA/ENB jumper behavior documented
+- UI:
+  - Active cells fill yellow to clearly show detection
+  - Training gating fixed to align with button expectations
+- App behavior:
+  - `LEFT` decision sends a `STOP` to ESP32 to halt
+
+CLI Examples
+- UI with Mega sensors and ESP32:
+  - python -m light_snn.main --serial COM3 --baud 9600 --esp32_host 192.168.4.1 --ui_values --noise_margin 60 --sigma_multiplier 0.5 --smooth_alpha 0.2 --active_frames 2 --flash_extra 10 --ratio_min 0.25 --delta_min 120
+- Demo without hardware (sends directions to ESP32):
+  - python -m light_snn.main --demo --esp32_host 192.168.4.1 --ui_values
+- Car motion test script:
+  - python -m light_snn.tools.test_car --esp32_host 192.168.4.1 --power 1.0 --sequence forward,stop,right,stop,back,stop
+
+File Map Highlights
+- Python SNN
+  - light_snn/snn.py: core SNN controller — calibration, spike gating, training, prototypes, decision bias
+  - light_snn/main.py: orchestration — serial, UI, UDP client, parameter tuning, STOP on LEFT
+  - light_snn/ui_values.py: sensor grid and activity visualization
+  - light_snn/io_serial.py: frame parsing
+  - light_snn/io_wifi.py: UDP client to ESP32
+- Arduino
+  - light_snn/arduino/mega_sensor_grid/mega_sensor_grid.ino: sensor + button framing
+  - light_snn/arduino/esp32_udp_car/esp32_udp_car.ino: WiFi AP, UDP/TCP command parsing, motor control, ACKs, boot self-test
+- Tools
+  - light_snn/tools/test_car.py: motion sequence sender using UDP
+- FPGA (Verilog, variant)
+  - brian/rtl/*: UART, frame parsing, encoder, crossbar, LIF neurons, PWM motor output
+  - brian/docs/robot_build.md: wiring and integration guide with 2×2 or 3×3 options
+
+Conclusion
+- The project delivers a robust light-seeking SNN system across Python and FPGA implementations, with a practical robot car integration over WiFi. The training mechanism and prototype-based decision logic stabilize behavior and reduce flicker; calibration and threshold gating ensure genuine detections. The ESP32 firmware and app-level guards (STOP on LEFT) provide reliable motion control tailored to your operational constraints. The system is modular and tunable, with clear extension paths to physical memristors and additional decision policies.
+

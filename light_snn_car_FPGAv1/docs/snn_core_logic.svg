@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <rect x="0" y="0" width="1920" height="1080" fill="#0f1115"/>
+  <style>
+    .title { fill:#e0e0e0; font-family:Segoe UI, Roboto, Arial; font-size:36px; font-weight:700 }
+    .label { fill:#cfd8dc; font-family:Segoe UI, Roboto, Arial; font-size:22px; font-weight:600 }
+    .small { fill:#b0bec5; font-family:Segoe UI, Roboto, Arial; font-size:18px }
+    .box { fill:#1c2228; stroke:#546e7a; stroke-width:2 }
+    .gate { fill:#162028; stroke:#78909c; stroke-width:2 }
+    .wire { stroke:#4FC3F7; stroke-width:3; fill:none; marker-end:url(#arrow) }
+    .wire2 { stroke:#00C853; stroke-width:3; fill:none; marker-end:url(#arrow) }
+    .wire3 { stroke:#FFB300; stroke-width:3; fill:none; marker-end:url(#arrow) }
+    .mem { fill:#212b33; stroke:#90caf9; stroke-width:2 }
+    .sum { fill:#263238; stroke:#90caf9; stroke-width:2 }
+    .cmp { fill:#263238; stroke:#00D1FF; stroke-width:2 }
+    .mux { fill:#263238; stroke:#FFA000; stroke-width:2 }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <polygon points="0,0 12,4 0,8" fill="#4FC3F7"/>
+    </marker>
+    <!-- memristor symbol -->
+    <symbol id="memristor" viewBox="0 0 60 40">
+      <rect x="2" y="8" width="56" height="24" class="mem"/>
+      <polyline points="6,20 14,14 22,26 30,14 38,26 46,14 54,20" stroke="#90caf9" stroke-width="2" fill="none"/>
+      <circle cx="6" cy="20" r="3" fill="#90caf9"/>
+      <circle cx="54" cy="20" r="3" fill="#90caf9"/>
+    </symbol>
+  </defs>
+
+  <text x="60" y="70" class="title">Trainable SNN Core — Logic Schematic with Memristor Crossbar</text>
+  <text x="60" y="110" class="small" fill="#90caf9">Verilog: light_snn_car_FPGAv1/rtl/snn_core.v</text>
+
+  <!-- Left: Sensor threshold row drivers -->
+  <rect x="60" y="180" width="320" height="220" class="box"/>
+  <text x="80" y="210" class="label">Row Drivers</text>
+  <text x="80" y="238" class="small">9× comparator: sensors[11:0] > thr_in</text>
+  <!-- Draw 3 comparators -->
+  <g transform="translate(80,260)">
+    <rect x="0" y="0" width="80" height="40" class="cmp"/>
+    <text x="10" y="26" class="small">&gt; thr</text>
+    <rect x="0" y="60" width="80" height="40" class="cmp"/>
+    <text x="10" y="86" class="small">&gt; thr</text>
+    <rect x="0" y="120" width="80" height="40" class="cmp"/>
+    <text x="10" y="146" class="small">&gt; thr</text>
+  </g>
+  <!-- wires from drivers to crossbar rows -->
+  <path d="M380,240 C420,240 460,240 500,240" class="wire"/>
+  <path d="M380,300 C420,300 460,300 500,300" class="wire"/>
+  <path d="M380,360 C420,360 460,360 500,360" class="wire"/>
+  <text x="410" y="226" class="small" fill="#4FC3F7">row_en[0..8]</text>
+
+  <!-- Memristor crossbar 9x4 -->
+  <rect x="500" y="160" width="520" height="360" class="box"/>
+  <text x="520" y="190" class="label">Memristor Crossbar 9×4</text>
+  <text x="520" y="218" class="small">g_mem[i][j] — trainable conductance</text>
+  <!-- draw a 3x4 subset, imply 9x4 -->
+  <g transform="translate(520,240)">
+    <use href="#memristor" x="0" y="0"/>
+    <use href="#memristor" x="120" y="0"/>
+    <use href="#memristor" x="240" y="0"/>
+    <use href="#memristor" x="360" y="0"/>
+
+    <use href="#memristor" x="0" y="70"/>
+    <use href="#memristor" x="120" y="70"/>
+    <use href="#memristor" x="240" y="70"/>
+    <use href="#memristor" x="360" y="70"/>
+
+    <use href="#memristor" x="0" y="140"/>
+    <use href="#memristor" x="120" y="140"/>
+    <use href="#memristor" x="240" y="140"/>
+    <use href="#memristor" x="360" y="140"/>
+  </g>
+  <!-- column wires out -->
+  <path d="M1020,280 C1060,280 1100,280 1140,280" class="wire2"/>
+  <path d="M1020,350 C1060,350 1100,350 1140,350" class="wire2"/>
+  <path d="M1020,420 C1060,420 1100,420 1140,420" class="wire2"/>
+  <path d="M1020,490 C1060,490 1100,490 1140,490" class="wire2"/>
+  <text x="1040" y="264" class="small" fill="#00C853">col_sum_in[FRONT]</text>
+  <text x="1040" y="334" class="small" fill="#00C853">col_sum_in[BACK]</text>
+  <text x="1040" y="404" class="small" fill="#00C853">col_sum_in[LEFT]</text>
+  <text x="1040" y="474" class="small" fill="#00C853">col_sum_in[RIGHT]</text>
+
+  <!-- Column adders -->
+  <rect x="1140" y="250" width="160" height="300" class="sum"/>
+  <text x="1160" y="278" class="small">Σ adders</text>
+  <text x="1160" y="304" class="small">out_sum[0..3]</text>
+
+  <!-- Threshold comparators -->
+  <g transform="translate(1340,260)">
+    <rect x="0" y="0" width="140" height="40" class="cmp"/>
+    <text x="10" y="26" class="small">out_sum0 ≥ thr_out</text>
+    <rect x="0" y="60" width="140" height="40" class="cmp"/>
+    <text x="10" y="86" class="small">out_sum1 ≥ thr_out</text>
+    <rect x="0" y="120" width="140" height="40" class="cmp"/>
+    <text x="10" y="146" class="small">out_sum2 ≥ thr_out</text>
+    <rect x="0" y="180" width="140" height="40" class="cmp"/>
+    <text x="10" y="206" class="small">out_sum3 ≥ thr_out</text>
+  </g>
+
+  <!-- Argmax / priority selection -->
+  <rect x="1520" y="260" width="180" height="200" class="mux"/>
+  <text x="1540" y="290" class="label">Argmax</text>
+  <text x="1540" y="318" class="small">winner-take-all</text>
+  <text x="1540" y="344" class="small">one-hot dir_bits</text>
+  <path d="M1300,280 C1400,280 1500,280 1520,280" class="wire2"/>
+  <path d="M1300,340 C1400,340 1500,340 1520,340" class="wire2"/>
+  <path d="M1300,400 C1400,400 1500,400 1520,400" class="wire2"/>
+  <path d="M1300,460 C1400,460 1500,460 1520,460" class="wire2"/>
+
+  <!-- Outputs -->
+  <rect x="1720" y="300" width="160" height="120" class="box"/>
+  <text x="1740" y="330" class="label">dir_bits[3:0]</text>
+  <text x="1740" y="358" class="small">[0]=FRONT [1]=BACK</text>
+  <text x="1740" y="384" class="small">[2]=LEFT [3]=RIGHT</text>
+  <path d="M1700,320 C1710,320 1715,320 1720,320" class="wire3"/>
+
+  <!-- Training controller -->
+  <rect x="500" y="560" width="540" height="180" class="box"/>
+  <text x="520" y="590" class="label">Training Controller</text>
+  <text x="520" y="618" class="small">Buttons: train, front, back, left, right</text>
+  <text x="520" y="644" class="small">Rule: boost active column; depress others</text>
+  <!-- arrows from controller to memristors -->
+  <path d="M770,560 C770,520 770,500 770,480" class="wire3"/>
+  <text x="780" y="520" class="small" fill="#FFB300">Δg_mem[i][j]</text>
+
+  <!-- Notes -->
+  <text x="60" y="980" class="small" fill="#90caf9">Hidden activations are threshold comparators; memristor crossbar models trainable conductances; column adders sum active rows; argmax selects one-hot decision.</text>
+</svg>

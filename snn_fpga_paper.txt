@@ -1,0 +1,68 @@
+Spiking Neural Network (SNN) FPGA Autonomous Car Implementation Report
+
+1. Abstract
+
+This report details the implementation of a Spiking Neural Network (SNN) on an FPGA for the autonomous control of a robotic car. The system processes real-time sensor data to make navigation decisions using biologically inspired neural dynamics. The core of the system is a neuromorphic architecture that learns to associate sensory inputs with motor actions through synaptic plasticity mechanisms, specifically Potentiation and Depression. The design leverages the parallel processing capabilities of the FPGA to ensure low-latency response times, crucial for autonomous navigation.
+
+2. System Architecture
+
+The autonomous car system is composed of three main subsystems:
+- **Sensory Input Module (Arduino)**: Acquires data from infrared distance sensors and user control inputs.
+- **Neuromorphic Core (FPGA)**: Processes sensory data using SNN logic to generate motor commands.
+- **Actuation Module**: Drives the motors based on the FPGA's output.
+
+Data flow:
+1.  **Sensation**: Four infrared sensors detect obstacles in the Front, Left, Right, and Back directions.
+2.  **Transmission**: The Arduino packages sensor data into UART frames and transmits them to the FPGA.
+3.  **Processing**: The FPGA SNN core integrates the sensor data, updates synaptic weights based on learning rules, and fires output neurons.
+4.  **Action**: The firing of an output neuron (Forward, Left, Right, Back, or Stop) triggers the corresponding motor action.
+
+3. SNN Core Implementation Details
+
+The SNN core is implemented in Verilog and consists of a layer of sensory neurons connected to a layer of motor neurons via a plastic synaptic weight matrix.
+
+3.1. Neuron Model (Leaky Integrate-and-Fire)
+
+The fundamental unit of the SNN is the Leaky Integrate-and-Fire (LIF) neuron. Each neuron maintains a membrane potential ($V_{mem}$) that represents its internal state.
+
+-   **Integration**: Incoming spikes from connected synapses increase $V_{mem}$. The magnitude of the increase is determined by the synaptic weight ($W_{ij}$).
+    $$V_{mem}(t) = V_{mem}(t-1) + \sum (Input_i \times W_{ij})$$
+-   **Leakage**: To mimic biological decay, $V_{mem}$ decreases over time by a leak constant ($I_{leak}$) when no input is received. This ensures that only sustained or synchronized inputs trigger a response.
+    $$V_{mem}(t) = V_{mem}(t) - I_{leak}$$
+-   **Firing**: When $V_{mem}$ exceeds a predefined threshold ($V_{thresh}$), the neuron fires a spike.
+-   **Refractory Period**: After firing, $V_{mem}$ is reset to zero, and the neuron enters a refractory period during which it cannot fire, preventing hyper-activity.
+
+3.2. Synaptic Plasticity and Learning
+
+The system employs a Hebbian-like learning rule where synaptic weights are adjusted based on the correlation between sensory inputs and successful navigation actions. This allows the car to adapt its behavior over time.
+
+-   **Potentiation (Learning)**: When the car performs a desired action (e.g., moving forward when the path is clear), the synapses connecting the currently active sensors to the "Forward" neuron are strengthened. This increases the probability that the same sensory pattern will trigger "Forward" in the future.
+    $$W_{ij}(new) = W_{ij}(old) + \Delta W_{plus}$$
+    
+-   **Depression (Forgetting)**: Conversely, synapses that contribute to incorrect or undesirable actions are weakened. If a neuron fires but leads to a collision or an incorrect turn, its input weights are depressed. Additionally, a global decay mechanism ensures that unused connections slowly fade, preventing weight saturation.
+    $$W_{ij}(new) = W_{ij}(old) - \Delta W_{minus}$$
+
+3.3. Weight Assessment Logic
+
+The intelligence of the system resides in the weight matrix. 
+-   **Initialization**: Weights are initialized to low random values.
+-   **Assessment**: During operation, the SNN continuously assesses the "strength" of the connection between a sensor (e.g., "Obstacle Left") and an action (e.g., "Turn Right"). 
+-   **Adaptation**: Through the Potentiation and Depression mechanisms, the network naturally evolves a high weight between "Obstacle Left" and "Turn Right", and a low weight between "Obstacle Left" and "Turn Left".
+
+4. System Interconnectivity and Data Flow
+
+The FPGA and Arduino communicate via a high-speed UART interface.
+
+-   **Packet Structure**: Data is sent in 9-byte packets containing:
+    -   Header (0xAA, 0x55) for synchronization.
+    -   Sensor Data (4 bytes): Normalized values from the IR sensors.
+    -   Status Byte: Contains current state information.
+    -   Checksum: For data integrity.
+    
+-   **FPGA Input Processing**: The `uart_rx` module deserializes the incoming bits. The `frame_rx` module validates the checksum and extracts the sensor values. These values are directly mapped to the input current of the SNN's sensory neurons.
+
+-   **Motor Control**: The output neurons of the SNN are connected to a Winner-Take-All (WTA) block. The neuron with the highest activity inhibits the others, ensuring a single, decisive motor command is sent to the H-bridge drivers.
+
+5. Conclusion
+
+This implementation demonstrates a functional autonomous navigation system using a Spiking Neural Network on an FPGA. By utilizing LIF neurons and dynamic synaptic plasticity (Potentiation/Depression), the system is capable of learning navigation behaviors without complex programming or external processors. The direct hardware implementation ensures parallel processing of all neurons, providing the millisecond-level reaction times required for real-time robotics.

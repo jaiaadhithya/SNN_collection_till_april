@@ -1,0 +1,62 @@
+// Verilog-A Memristor Model (VTEAM Model)
+// Optimized for Cadence / SPICE simulation of On-Chip Learning
+
+`include "disciplines.vams"
+`include "constants.vams"
+
+module memristor_vteam(p, n);
+    inout p, n;
+    electrical p, n;
+    
+    // Model Parameters (VTEAM - Voltage ThrEshold Adaptive Memristor)
+    // These values can be tuned to match specific device characteristics
+    parameter real Ron = 100.0;        // Low Resistance State (Ohms) -> High Conductance
+    parameter real Roff = 10000.0;     // High Resistance State (Ohms) -> Low Conductance
+    parameter real Rinit = 5000.0;     // Initial Resistance
+    parameter real D = 10e-9;          // Device thickness (meters)
+    parameter real v_off = 0.5;        // Threshold voltage for OFF switching
+    parameter real v_on = -0.5;        // Threshold voltage for ON switching
+    parameter real k_off = 1e-4;       // Rate constant for OFF switching
+    parameter real k_on = -1e-4;       // Rate constant for ON switching
+    parameter real alpha_off = 1.0;    // Nonlinearity for OFF
+    parameter real alpha_on = 1.0;     // Nonlinearity for ON
+    parameter real w_off = 10e-9;      // State variable boundary (OFF)
+    parameter real w_on = 0.0;         // State variable boundary (ON)
+    
+    // Internal State Variable 'w' (Effective tunnel width or filament length)
+    real w;
+    real dw_dt;
+    
+    // Current and Voltage
+    real i_mem, v_mem;
+
+    analog begin
+        v_mem = V(p, n);
+        
+        // --- 1. State Equation (VTEAM) ---
+        // Defines how the internal state 'w' changes with voltage
+        if ((v_off < v_mem) && (w < w_off)) begin
+            dw_dt = k_off * pow((v_mem / v_off - 1), alpha_off);
+        end else if ((v_on > v_mem) && (w > w_on)) begin
+            dw_dt = k_on * pow((v_mem / v_on - 1), alpha_on);
+        end else begin
+            dw_dt = 0;
+        end
+        
+        // Integrate state variable
+        w = idt(dw_dt, 0); // Note: Initial condition handling depends on simulator
+        
+        // Limit w to physical boundaries [w_on, w_off]
+        if (w < w_on) w = w_on;
+        if (w > w_off) w = w_off;
+
+        // --- 2. IV Relationship ---
+        // Resistance depends on state 'w'
+        // Linear interpolation between Ron and Roff
+        // R(w) = Ron + (Roff - Ron) * (w - w_on) / (w_off - w_on)
+        
+        i_mem = v_mem / (Ron + (Roff - Ron) * (w - w_on) / (w_off - w_on));
+        
+        I(p, n) <+ i_mem;
+    end
+endmodule
